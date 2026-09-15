@@ -76,7 +76,7 @@ Geometric:
 * For unitless quantities (eg: ratios)
 
 $$
-\frac{1}{n}\sum_{i=1}^{n} \text{latency}_i
+\sqrt[n]{\prod_{i=i}^{n} \text{speedup}_i}
 $$
 
 ## Amdahl's Law
