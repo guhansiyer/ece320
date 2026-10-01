@@ -143,6 +143,25 @@ For `jal` and `jalr`, the PC is updated to a target address rather than simply i
 
 These instructions also write the return address into a register, because they are used for calls and returns.
 
+## Instruction Decode and Control Logic
+
+The decoder is the part of the control unit that inspects the instruction bits and decides which control signals to assert.
+
+It looks at the opcode and a few secondary fields, such as:
+
+* the instruction type (R-type, I-type, S-type, B-type, J-type)
+* the funct3 and funct7 bits for more specific ALU operations
+* the register numbers used as operands
+* whether a branch, jump, load, or store is being executed
+
+For example:
+
+* `add` and `sub` are both R-type, but use different ALU control values
+* `lw` and `sw` both access memory, but one reads and one writes
+* `beq` and `bne` both branch, but check different conditions
+
+The decoder therefore converts the instruction into a set of control decisions for the rest of the datapath.
+
 ## Control Signals
 
 The control unit generates control signals that decide what the datapath does.
@@ -155,8 +174,11 @@ Examples of signals include:
 * MemWrite: whether memory should be written
 * MemToReg: whether the result to write back comes from memory or the ALU
 * Branch: whether a branch is taken
+* PCSrc: whether the next PC comes from the sequential path or the branch/jump target
 
 These signals are determined from the instruction type and the fields in the instruction.
+
+A useful mental model is that the control unit is not computing the data values themselves; it is deciding which data path components are enabled and which values are selected.
 
 ## Single-Cycle Datapath
 
