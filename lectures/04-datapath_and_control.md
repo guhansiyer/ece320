@@ -1,319 +1,182 @@
 # Datapath and Control
 
-## The Processor as a Finite-State Machine
+So far we know what kinds of instructions a processor might execute, and how to perform arithmetic and logic in an ALU.
 
-At the highest level, a processor is a machine that repeatedly does a few basic things:
+Now, we will learn how to design a processor in which the ALU is just one component.
 
-1. Fetch an instruction from memory.
-2. Decode the instruction.
-3. Read the required operands.
-4. Perform the operation.
-5. Write data back if needed.
-6. Update the program counter.
+The datapath implements execute portion of fetch, execute, write loop. This is done through functional units (ALUs), registers, and the memory interface.
 
-This repeated sequence is the essence of the processor datapath.
 
-The control unit tells the datapath what to do at each step. The datapath performs the actual data movement and computation. Together, they form the microarchitecture of the CPU.
+Control implements the decode portion of fetch, execute, write loop. This is done through multiplexer selectors and write enable signals.
 
-## Datapath Components
+## One-Instruction-Per-Cycle RISC-V
 
-A simple processor datapath contains several major pieces:
+On every tick of the clock, the processor executes one instruction.
 
-* Instruction memory
-* Program counter (PC)
-* Register file
-* ALU
-* Data memory
-* Control logic
+Current state outputs drive the inputs to the combinational logic, whose outputs settle at the values of the state before the next clock edge.
 
-Each component has a specific purpose:
+At the rising clock edge, all the state elements are updated with the combinational logic outputs, and execution moves to the next clock cycle.
 
-* Instruction memory provides the current instruction.
-* PC tracks the current point in the program.
-* Register file stores the architectural registers.
-* ALU performs arithmetic and logical operations.
-* Data memory stores variables and arrays.
-* Control logic decides which operations occur for each instruction.
+![alt text](images/04-1.png)
 
-## Fetch Stage
+If we want to build a processor for an ISA, we should start with the datapath and make sure it can implement every instruction.
 
-The first step is to fetch the instruction.
+## Datapath for RV32 ISA
 
-The PC contains the address of the next instruction. That address is sent to instruction memory, which returns the instruction word.
+Consider these instructions only:
 
-```text
-PC -> Instruction Memory -> IR
-```
+* `add x1,x2,x3`
+* `sub x1,x2,x3`
+* `addi x1,x2,2`
+* `lw x1,4(x3)`
+* `sw x1,4(x3)`
+* `beq x1,x2,PC_relative_target`
+* `jalr x1,4`
 
-The instruction is placed into an instruction register (`IR`), and then the PC is advanced.
+Most other instructions are similar from a datapath viewpoint, so we will focus on these examples.
 
-In a simple single-cycle design, the PC may increment by 4 each time, because each RISC-V instruction is 32 bits wide.
+## Registers
 
-## Decode Stage
+A register is a D flip flop (DFF) array with a shared clock and write-enable (WE). A single register is useful for some things (ex: program counter (PC)).
 
-Once the instruction has been fetched, it must be decoded.
+### What about the ISA Registers?
 
-The control unit examines the opcode and other fields to determine:
+The ISA registers (architectural/visible) form a register file. This file has two read ports and one write port.
 
-* What type of instruction it is
-* Which registers are involved
-* Whether an immediate is needed
-* Whether memory is accessed
-* Whether the program counter changes
+Ports are wires for accessing an array of data. $M$ ports = $M$ parallel and independent acceses.
 
-For example, if the opcode indicates an arithmetic instruction, the control unit chooses the ALU operation. If the opcode indicates a load or store, the control unit brings in memory control signals.
+## Memory
 
-## Register File
+Memory is where instructions and data reside. There is one address, one input data bus for writes and one output data bus for reads. There is a one access per cycle, which is either read or write.
 
-The register file contains the CPU's 32 registers.
+Reads are combinational. The output of the read data is a function of the read selected port and the contents of the register file.
 
-It supports:
+Writes are sequential. The selected register (memory location) is updated on the posedge clock transition when write enable is asserted. Thus a write cannot affect the read output in between clock edges.
 
-* Two reads from source registers
-* One write to a destination register
+## Fetch
 
-Example:
+This consists of the PC and instruction memory (IMEM). A `+4` increment unit computes the default next instruction PC.
 
-```asm
-add x10, x11, x12
-```
+In general, the PC provides addresses to the instruction memory.
 
-This reads `x11` and `x12` from the register file, sends them to the ALU, and writes the result to `x10`.
+## First instruction: `add`
 
-The register file is read/write with the control signals generated by the decoder.
+> `add rd, rs1, rs2`: `0000000 | rs2 | rs1 | 000 | rd | 0110011`
 
-## ALU
+Semantically, this is equal to `Reg[rd] = Reg[rs1] + Reg[rs2]`. Thus, we need to add the register file and ALU to the datapath:
 
-The arithmetic logic unit performs the actual computations.
+![alt text](images/04-2.png)
+![alt text](images/04-3.png)
 
-It can do things like:
+## Second instruction: `sub`
 
-* Add
-* Subtract
-* Compare
-* Shift
-* Bitwise AND/OR/XOR
+> `sub rd, rs1, rs2`: `0100000 | rs2 | rs1 | 000 | rd | 0110011`
 
-For most instructions, the ALU is the core computational element.
+Semantically, this is equal to `Reg[rd] = Reg[rs1] - Reg[rs2]`. This is almost the same as `add`; `inst[30]` selects betweeen addition and subtraction.
 
-The result is then either:
+To support this, we add `ALUSel`:
 
-* Written back to a register
-* Sent to memory as a store value
-* Used to compute a branch target
+![alt text](images/04-4.png)
 
-## Memory Access
+To implement other R-type instructions, we similarly decode `funct3` and `funct7` with a suitable ALU function.
 
-Some instructions need access to memory:
+## Third instruction: `addi`
 
-* `lw` and `sw`
-* `lb` and `sb`
+> `addi rd, rs1, imm`: `imm | rs1 | 000 | rd | 0010011`
 
-For loads, the ALU computes the effective address, data memory reads the memory word at that address, and the result is written to the destination register.
+Semantically: `Reg[rd] = Reg[rs1] + IMMGEN(imm,I)`
 
-For stores, the ALU computes the address and the data memory writes the value from the register file into memory.
+To support this, we need to add a sign extension unit and a multiplexer into the second ALU input to select between the regfile output or immediate:
 
-This is where the distinction between the datapath and the memory system becomes important: the datapath tells memory where to read/write, and memory returns or stores the data.
+![alt text](images/04-5.png)
 
-## Branches and Jumps
+This works for all other I-type airthmetic instructions, all we have to change is `ALUSel`.
 
-The control flow instructions modify the program counter.
+### I-Type Immediates
 
-### Conditional Branches
+> I-Type: `imm[11:0] | rs1 | funct3 | rd | opcode`
 
-For `beq`, `bne`, `blt`, etc., the ALU compares the two source registers.
+The high 12 bits of the instruction (`inst[31:20]`) is copied to the low 12 bits of the immediate (`imm[11:0]`).
 
-If the condition is true:
+The immediate is sign extended by copying `inst[31]` to the upper 20 bits of the immediate (`imm[31:12]`).
 
-* the next PC is set to the branch target
+## Fourth instruction: `lw`
 
-If the condition is false:
+> `lw rd, imm(rs1)`: `imm | rs1 | 010 | rd | 0000011`
 
-* the next PC is set to the normal sequential instruction
+Semantically: `Reg[rd] = MEM[Reg[rs1] + IMMGEN(imm,I)]`.
 
-This means the datapath must compute:
+To support this, we add data memory, where the address is the ALU output `Reg[rs1] + IMMGEN(imm,I)`. We also add a register write data multiplexer to select between memory output or ALU output.
 
-* the next sequential PC (`PC + 4`)
-* the branch target address
-* the branch decision
+Load instructions are I-type, so we use the same immediate format and generation.
 
-### Jumps
+![alt text](images/04-6.png)
 
-For `jal` and `jalr`, the PC is updated to a target address rather than simply incrementing by 4.
+For load instructions, `funct3` encodes size and signedness of the data.
 
-These instructions also write the return address into a register, because they are used for calls and returns.
+## Fifth instruction: `sw`
 
-## Instruction Decode and Control Logic
+> `sw r2, imm(rs1)`: `imm[11:5] | rs2 | rs1 | 010 | imm[4:0] | 0100011`
 
-The decoder is the part of the control unit that inspects the instruction bits and decides which control signals to assert.
+Semantically: `Reg[rs2] = MEM[Reg[rs1] + IMMGEN(imm,S)]`.
 
-It looks at the opcode and a few secondary fields, such as:
+To support this, we add a path from the second register's output to the data memory data input, disable write enable on the register file, and use an S-format immediate:
 
-* the instruction type (R-type, I-type, S-type, B-type, J-type)
-* the funct3 and funct7 bits for more specific ALU operations
-* the register numbers used as operands
-* whether a branch, jump, load, or store is being executed
+![alt text](images/04-7.png)
 
-For example:
+### S-Immediate vs. I-Immediate
 
-* `add` and `sub` are both R-type, but use different ALU control values
-* `lw` and `sw` both access memory, but one reads and one writes
-* `beq` and `bne` both branch, but check different conditions
+> I-Type: `imm[11:0] | rs1 | funct3 | rd | opcode`
 
-The decoder therefore converts the instruction into a set of control decisions for the rest of the datapath.
+> S-Type: `imm[11:5] | rs2 | rs1 | funct3 |  imm[4:0] | opcode`
 
-## Control Signals
+> `imm[31:0]` (I-Type): `inst[31](sign-extension) | inst[30:25] | inst[24:20]`
 
-The control unit generates control signals that decide what the datapath does.
+> `imm[31:0]` (S-Type): `inst[31](sign-extension) | inst[30:25] | inst[11:7]`
 
-Examples of signals include:
+A 5-bit multiplexer selects between two positions where the low 5 bits can reside in an instruction (24:20 or 11:7).
 
-* RegWrite: whether to write a result back to a register
-* ALUSrc: whether the ALU input comes from a register or an immediate
-* MemRead: whether memory should be read
-* MemWrite: whether memory should be written
-* MemToReg: whether the result to write back comes from memory or the ALU
-* Branch: whether a branch is taken
-* PCSrc: whether the next PC comes from the sequential path or the branch/jump target
+## Sixth instruction: `beq`
 
-These signals are determined from the instruction type and the fields in the instruction.
+> `beq rs1, rs2, target`: `imm[12] | imm[10:5] | rs2 | rs1 | funct3 | imm[4:1] | imm[11] | opcode`
 
-A useful mental model is that the control unit is not computing the data values themselves; it is deciding which data path components are enabled and which values are selected.
+B-Type instructions are similar to S-Type: they both have two register sources and a 12-bit immediate.
 
-## Single-Cycle Datapath
+Semantically: `(Reg[rs1] == Reg[rs2]) ? PC = PC + IMMGEN(imm, B) : PC + 4`
 
-A single-cycle datapath executes one instruction in one clock cycle.
+To support this, we must:
 
-That means all major steps of the instruction happen in a single cycle:
+1. Compute the result of the comparison.
+2. Write 0 to the least-significant bit.
+3. Reuse the ALU to compute the PC-relative branch target.
+4. Use a multiplexer to select `Reg[rs1]` or `PC` as the top input to the ALU.
+5. Use a multiplexer to select `PC` or branch target address for the next `PC`.
 
-* fetch the instruction
-* read registers
-* perform ALU operation
-* access memory
-* write back result
+![alt text](images/04-8.png)
 
-This is conceptually simple and easy to understand.
+### Branch Comparator
 
-The downside is that every instruction takes the same amount of time, even if some operations are easier than others. This makes the cycle time large and reduces performance.
+![alt text](images/04-9.png)
 
-## Why Pipelines Exist
+* BrEq = 1 if `A == B`.
+* BrLT = 1 if `A < B`.
+* BrUn = 1 selects unsigned comparison for BrLt.
+* `bge` branch if `!(A < B)`.
+* `bne` branch if `!(A == B)`.
 
-A single-cycle machine is easy to design, but not very efficient.
+### Branch Immediates
 
-The instruction cycle naturally has different stages:
+A 12-bit immediate encodes PC-relative offset of [-4096, 4096] bytes in 2 byte multiples.
 
-* Fetch
-* Decode
-* Execute
-* Memory
-* Write-back
+The approach RISC-V takes is essentially to left shift the S-Type immediate by 1 bit. We keep `imm[10:1]` in a fixed position in the output value, wire in 0 for the LSB (`imm[0]`), and sign-extend by `imm[12]` (`inst[31]`).
 
-If we separate these into pipeline stages, each stage can work on a different instruction at the same time.
+Only one bit changes position between S-Type and B-Type (`inst[7]`).
 
-This gives better throughput, even if each individual instruction still takes several cycles to finish.
+## Seventh instruction: `jalr`
 
-The key idea is overlap:
+> `jalr rd, rs, imm`: `imm[11:0] | rs1 | 000 | rd | 1100111`
 
-* while one instruction is in the execute stage, another can be in the decode stage, and another can be in the fetch stage.
+Semantically:
 
-This is the basic principle behind modern pipelined CPUs.
-
-## Control in a Pipeline
-
-In a pipelined processor, control signals are generated in the decode stage and then passed along with the instruction through the pipeline.
-
-Each pipeline stage needs to know which parts of the datapath are relevant to the instruction.
-
-For example:
-
-* the fetch stage needs the PC and instruction memory
-* the decode stage needs the opcode and register fields
-* the execute stage needs the ALU operation and branch signal
-* the memory stage needs memory read/write signals
-* the write-back stage needs RegWrite and MemToReg
-
-The control unit does not need to recompute everything at every stage; it simply passes the necessary control values with the instruction.
-
-## Example: R-Type Instruction
-
-Consider:
-
-```asm
-add x10, x11, x12
-```
-
-The datapath behavior is:
-
-1. Fetch instruction from memory.
-2. Decode as an R-type instruction.
-3. Read `x11` and `x12` from the register file.
-4. Send values to ALU.
-5. ALU adds them.
-6. Write result to `x10`.
-7. Increment PC by 4.
-
-The control signals for this instruction are:
-
-* RegWrite = 1
-* ALUSrc = 0
-* MemRead = 0
-* MemWrite = 0
-* MemToReg = 0
-* Branch = 0
-
-## Example: Load Instruction
-
-Consider:
-
-```asm
-lw x10, 8(x11)
-```
-
-The datapath behavior is:
-
-1. Fetch instruction.
-2. Decode as a load word.
-3. Read base register `x11`.
-4. ALU computes effective address `x11 + 8`.
-5. Data memory reads value at that address.
-6. Write result to `x10`.
-7. Increment PC by 4.
-
-The control signals would include:
-
-* ALUSrc = 1
-* MemRead = 1
-* MemToReg = 1
-* RegWrite = 1
-
-## Example: Branch Instruction
-
-Consider:
-
-```asm
-beq x1, x2, target
-```
-
-The datapath behavior is:
-
-1. Fetch instruction.
-2. Decode as a branch.
-3. Read `x1` and `x2`.
-4. ALU compares them.
-5. If equal, set target PC.
-6. Otherwise continue with PC + 4.
-
-The branch control signal decides whether to take the branch or not.
-
-## Summary
-
-The datapath is the hardware that carries data values through the processor. The control unit decides which operations are performed and when.
-
-A basic RISC-V datapath supports:
-
-* register reads and writes
-* ALU arithmetic and comparison
-* memory loads and stores
-* branch and jump control
-
-The design must coordinate all of these pieces while keeping instructions simple and regular. That regularity is exactly what makes RISC-V an attractive ISA for teaching processor design.
+* `Reg[rd] = PC + 4`
+* `PC = (Reg[rs1] + IMMGEN(imm,I)) & 0xFFFFFFFE`
