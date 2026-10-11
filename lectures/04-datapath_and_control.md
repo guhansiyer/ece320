@@ -6,7 +6,6 @@ Now, we will learn how to design a processor in which the ALU is just one compon
 
 The datapath implements execute portion of fetch, execute, write loop. This is done through functional units (ALUs), registers, and the memory interface.
 
-
 Control implements the decode portion of fetch, execute, write loop. This is done through multiplexer selectors and write enable signals.
 
 ## One-Instruction-Per-Cycle RISC-V
@@ -17,7 +16,7 @@ Current state outputs drive the inputs to the combinational logic, whose outputs
 
 At the rising clock edge, all the state elements are updated with the combinational logic outputs, and execution moves to the next clock cycle.
 
-![alt text](images/04-1.png)
+![alt text](images/04/04-1.png)
 
 If we want to build a processor for an ISA, we should start with the datapath and make sure it can implement every instruction.
 
@@ -63,20 +62,24 @@ In general, the PC provides addresses to the instruction memory.
 
 > `add rd, rs1, rs2`: `0000000 | rs2 | rs1 | 000 | rd | 0110011`
 
-Semantically, this is equal to `Reg[rd] = Reg[rs1] + Reg[rs2]`. Thus, we need to add the register file and ALU to the datapath:
+Semantically: `Reg[rd] = Reg[rs1] + Reg[rs2]`.
 
-![alt text](images/04-2.png)
-![alt text](images/04-3.png)
+Thus, we need to add the register file and ALU to the datapath:
+
+![alt text](images/04/04-2.png)
+![alt text](images/04/04-3.png)
 
 ## Second instruction: `sub`
 
 > `sub rd, rs1, rs2`: `0100000 | rs2 | rs1 | 000 | rd | 0110011`
 
-Semantically, this is equal to `Reg[rd] = Reg[rs1] - Reg[rs2]`. This is almost the same as `add`; `inst[30]` selects betweeen addition and subtraction.
+Semantically: `Reg[rd] = Reg[rs1] - Reg[rs2]`.
+
+This is almost the same as `add`; `inst[30]` selects betweeen addition and subtraction.
 
 To support this, we add `ALUSel`:
 
-![alt text](images/04-4.png)
+![alt text](images/04/04-4.png)
 
 To implement other R-type instructions, we similarly decode `funct3` and `funct7` with a suitable ALU function.
 
@@ -88,7 +91,7 @@ Semantically: `Reg[rd] = Reg[rs1] + IMMGEN(imm,I)`
 
 To support this, we need to add a sign extension unit and a multiplexer into the second ALU input to select between the regfile output or immediate:
 
-![alt text](images/04-5.png)
+![alt text](images/04/04-5.png)
 
 This works for all other I-type airthmetic instructions, all we have to change is `ALUSel`.
 
@@ -110,7 +113,7 @@ To support this, we add data memory, where the address is the ALU output `Reg[rs
 
 Load instructions are I-type, so we use the same immediate format and generation.
 
-![alt text](images/04-6.png)
+![alt text](images/04/04-6.png)
 
 For load instructions, `funct3` encodes size and signedness of the data.
 
@@ -122,16 +125,16 @@ Semantically: `Reg[rs2] = MEM[Reg[rs1] + IMMGEN(imm,S)]`.
 
 To support this, we add a path from the second register's output to the data memory data input, disable write enable on the register file, and use an S-format immediate:
 
-![alt text](images/04-7.png)
+![alt text](images/04/04-7.png)
 
 ### S-Immediate vs. I-Immediate
 
 > I-Type: `imm[11:0] | rs1 | funct3 | rd | opcode`
-
+>
 > S-Type: `imm[11:5] | rs2 | rs1 | funct3 |  imm[4:0] | opcode`
-
+>
 > `imm[31:0]` (I-Type): `inst[31](sign-extension) | inst[30:25] | inst[24:20]`
-
+>
 > `imm[31:0]` (S-Type): `inst[31](sign-extension) | inst[30:25] | inst[11:7]`
 
 A 5-bit multiplexer selects between two positions where the low 5 bits can reside in an instruction (24:20 or 11:7).
@@ -152,11 +155,11 @@ To support this, we must:
 4. Use a multiplexer to select `Reg[rs1]` or `PC` as the top input to the ALU.
 5. Use a multiplexer to select `PC` or branch target address for the next `PC`.
 
-![alt text](images/04-8.png)
+![alt text](images/04/04-8.png)
 
 ### Branch Comparator
 
-![alt text](images/04-9.png)
+![alt text](images/04/04-9.png)
 
 * BrEq = 1 if `A == B`.
 * BrLT = 1 if `A < B`.
@@ -180,3 +183,55 @@ Semantically:
 
 * `Reg[rd] = PC + 4`
 * `PC = (Reg[rs1] + IMMGEN(imm,I)) & 0xFFFFFFFE`
+
+This uses the same immediate format as I-Type instructions but ignores the least significant bit of the address (hence the `AND`).
+
+To support this, we must add an input `PC + 4` to the write-back multiplexer.
+
+![alt text](images/04/04-10.png)
+
+## What does control mean?
+
+As per the above image, 9 signals control the flow of data through the datapath. They are multiplexer selectors or register/memory write enable signals. In modern microprocessors there may be 100s of control signals.
+
+* `PCSel`
+* `ImmSel`
+* `RegWEn`
+* `BrUn`
+* `BSel`
+* `ASel`
+* `MemRW`
+* `WBSel`
+
+## Implementing Control
+
+Given a 32-bit instruction, information about the instruction type is encoded with only 9 bits:
+
+* `inst[30]`
+* `inst[14:12]`
+* `inst[6:2]`
+
+![alt text](images/04/04-11.png)
+
+Each instruction has a unique set of control signals. This gives us some options for implmenting control:
+
+1. Use instruction type to look up signals in a table.
+2. Design an FSM whose outputs are control signals.
+
+But the goal remains the same: turn instructions into control signals.
+
+### ROM for Control
+
+ROM (read only memory) is like non-writable RAM. Each bit in a word drives a control signal, and the addresses can be indexed by the instruction opcode.
+
+![alt text](images/04/04-12.png)
+![alt text](images/04/04-13.png)
+
+### ROM vs. Combinational Logic
+
+A control ROM is fine for 7 instructions and 9 control signals, but a real computer has over a 100 instructions and 300 control signals, and even RISCs have a lot of instructions. 
+
+In these cases, a control ROM wouldn't be huge but would be hard to make fast, and control must be faster than the datapath.
+
+An alternative is purely combinational control logic.
+
