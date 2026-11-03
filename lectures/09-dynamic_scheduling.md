@@ -17,4 +17,3 @@ Two options for who should schedule instructions: dynamic (hardware) or static (
 In a simple in-order pipeline we may have four stages (where EX is multi-cycle and includes M). There is a structural hazard in that we have 1 pipeline register per stage, and thus 1 instruction per stage per cycle. Younger instructions can't pass older ones without 'killing' them.
 
 In an out-of-order pipeline, we can implement passing functionality.
-
