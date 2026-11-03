@@ -20,7 +20,7 @@ For a 32-bit machine with 64KB pages, we have a 32-bit VA, 16-bit POFS, and a 16
 
 ![Address translation replaces the VPN with a PPN while preserving the page offset](images/07/07-3.png)
 
-```
+```asm
 VA[31:0]       VPN[31:16] | POFS[15:0]
                      ↓          ↓
 PA[27:0]       PPN[27:16] | POFS[15:0]
@@ -31,6 +31,7 @@ Addresses are translated with software, but have added hardware acceleration.
 Each process is allocated a page table (PT), which maps VPs to PPs or disk addresses. It is stored in physical memory and contains page table entries (PTE), which can point to locations in physical memory or the swap disk. PTs are indexed by VPN.
 
 We have six questions on the mechanics:
+
 1. What: Translate addresses.
 2. Why: Compatability, multiprogramming.
 3. How: Page tables.

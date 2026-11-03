@@ -2,7 +2,7 @@
 
 ## Scalar Pipelines and the Flynn Bottleneck
 
-So far we have looked at **scalar pipelines**, where we have one instruction per stage with control speculation, bypassing. 
+So far we have looked at **scalar pipelines**, where we have one instruction per stage with control speculation, bypassing.
 
 ![Scalar pipeline with one instruction per stage](images/08/08-1.png)
 
