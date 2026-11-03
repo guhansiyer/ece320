@@ -4,9 +4,23 @@
 
 So far we have looked at **scalar pipelines**, where we have one instruction per stage with control speculation, bypassing. 
 
+![Scalar pipeline with one instruction per stage](images/08/08-1.png)
+
 However, the performance limit is CPI = IPC = 1, or the Flynn bottleneck. This limit is never even achieved due to hazards, and we have limited returns from super-pipelining due to hazards and overhead.
 
 One solution is to overcome this limit due to **multiple issue** or **superscalar** pipelines, where we can have more than one instruction per stage (typically 4-wide).
+
+![Multiple-issue pipeline with parallel execution paths](images/08/08-2.png)
+
+### Ideal and Realistic Pipeline Timing
+
+The ideal schedules compare scalar and 2-way superscalar execution without stalls.
+
+![Ideal scalar and 2-way superscalar pipeline schedules](images/08/08-3.png)
+
+The realistic schedules show how stalls reduce the benefit of multiple issue. `D*` marks an instruction stalled in decode.
+
+![Realistic scalar and 2-way superscalar schedules with decode stalls](images/08/08-4.png)
 
 ## Superscalar CPI Calculations
 
@@ -26,7 +40,7 @@ Scalar pipeline: $1 + 0.2*0.75*2 = 1.3 \rightarrow 1.3/1 \rightarrow 30\% \ \tex
 
 ### Wide Fetch - Sequential Instructions
 
-![alt text](images/08/08-1.png)
+![Wide instruction fetch across sequential cache blocks](images/08/08-5.png)
 
 > What is involved in fetching multiple instructions per cycle?
 
@@ -44,6 +58,8 @@ Two questions:
 Most common organization is 1 and squash, which is one prediction where we discard post-branch instructions if taken. This lowers effective fetch width and IPC.
 
 ### Wide Decode
+
+![Multiple register read paths for wide decode](images/08/08-6.png)
 
 > What is involved in decoding multiple instructions per cycle?
 
@@ -74,6 +90,8 @@ X/M2.op == LOAD && (D/X2.rs1==X/M1.rd || D/X2.rs2==X/M1.rd)
 
 ### Wide Execute
 
+![Parallel ALUs for wide execution](images/08/08-7.png)
+
 > What is involved in executing $N$ instructions per cycle?
 
 Do we need $N$ execution units of every kind?
@@ -83,6 +101,8 @@ Do we need $N$ execution units of every kind?
 * Typically some mix of functional units proportional to instruction mix.
 
 ### Wide Bypass
+
+![Bypass connections between four execution lanes](images/08/08-8.png)
 
 * $N^2$ stall logic
   * Ok, only a small number of bits.
@@ -97,11 +117,15 @@ Do we need $N$ execution units of every kind?
 
 #### Clustering
 
+![Two ALU clusters with replicated register files and shared data memory](images/08/08-9.png)
+
 Clustering offers a solution to $N^2$ bypass by grouping ALUs into $k$ clusters with full bypassing within clusters and limited or no bypassing between.
 
 The key to performance is that hardware steers dependent instructions to the same cluster. This is typically used with replicated regfiles.
 
 ### Wide Memory Access
+
+![Multiple access paths to the data cache](images/08/08-10.png)
 
 > What about multiple load/stores per cycle?
 
@@ -118,6 +142,8 @@ One option is multi-porting, which is the most general solution (any two accesse
 Another option is replication, where we add read bandwidth but writes must go to all replicas. This is a general solution for loads with no latency penalty but is not a solution for stores (which is ok) and incurs an area and power penalty.
 
 ### Wide Register R/W
+
+![Multiple register file read and writeback paths](images/08/08-11.png)
 
 > How many register file ports to execute $N$ instructions per cycle?
 

@@ -1,0 +1,923 @@
+Computer Architecture
+
+     Unit 6: Caches
+
+      Hiren Patel
+
+
+
+                        1
+Memory Hierarchy
+     CPU   • Hierarchy of memory components
+              − Upper components
+                 • Fast « Small « Expensive
+      M1      − Lower components
+                 • Slow « Big « Cheap
+     M2    • Connected by buses
+              − Which also have latency and bandwidth issues
+           • Most frequently accessed data in M1
+ M3           − Next most frequently accessed in M2, etc.
+              − Automatically move data up and down the
+                hierarchy
+           • Optimize average access time
+M4
+
+                                                        5
+Concrete Memory Hierarchy
+    Processor         • 0th level: Registers
+         Regs
+                      • 1st level: Primary caches
+                Compiler
+                Managed    − Split instruction (I$) and data (D$)
+    I$    D$
+                           − Typically 8KB to 64KB each
+                      • 2nd level: Second-level cache (L2$)
+    L2$         Hardware   − Made of SRAM (same circuit type as CPU)
+                Managed
+                           − Typically 512KB to 16MB
+
+  Main                • 3rd level: Main memory
+  Memory                   − Made of DRAM (“Dynamic” RAM)
+                           − Typically 4GB to 8GB for desktops/laptops
+                Software
+                              • Servers can have 100s of GB
+                Managed
+                (by OS)• 4th level: Disk (swap and files)
+ Disk
+                           − Uses magnetic disks
+                                                                    7
+Why does hierarchy work?
+• Temporal locality
+   − Recently executed insns likely to be executed again
+      • Inner loops
+   − Recently referenced data is likely to be referenced again soon
+      • Data in inner loops, hot global data
+   − Hierarchy is reactive: move things up when accessed
+
+
+• Spatial locality
+   − Insns near recently executed insns likely to be executed soon
+       • Sequential execution
+   − Data near recently referenced data likely to be referenced soon
+       • Elements in an array, fields in a struct, variables in frame
+   − Hierarchy can be proactive: move things up speculatively
+
+                                                                      13
+Caches
+              • Cache: hardware managed
+   CPU
+                 − Hardware automatically retrieves missing data
+                 − Usually on-chip today
+   I$    D$      − In contrast to off-chip DRAM (main memory)
+              • Cache organization
+   L2            − ABC: Associativity, Blocks, Conflicts
+                 − Miss classification
+              • High-performance techniques
+ Main            − Reducing misses
+ Memory
+                 − Improving miss penalty
+                 − Improving hit latency
+              • Some example performance calculations
+Disk
+
+                                                            14
+Looking forward: Memory and Disk
+    CPU        • Main memory
+                  − DRAM-based memory systems
+                  − Virtual memory
+    I$    D$
+               • Disks and Storage
+    L2$           − Properties of disks
+                  − Disk arrays (for performance and reliability)
+
+  Main
+  Memory
+
+
+
+
+ Disk
+
+                                                                15
+Basic Memory Array Structure
+• Number of entries
+                                                                  0         1024*256bit
+   − 2n, where n is number of address bits
+                                                                  1         SRAM
+      • Example: 1024 entries, 10 bit address                     2
+   − Decoder changes n-bit address to                             3
+     2n bit signal
+
+
+
+
+                                                     wordlines
+   − One-bit address travels on wordlines
+                                           10 bits
+                                           address
+• Size of entries                                                 1021        frames
+   − Width of data accessed                                       1022
+                                                                  1023
+   − Data travels on bitlines
+   − 256 bits (32 bytes) in example
+                                                                 bitlines
+
+
+
+                                                                                16
+Caches: Finding Data via Indexing
+• Basic cache: array of block frames                                        0      1024*
+   − Example: 32KB cache (1024 frames, 32B blocks)                          1      256bit
+                                                                            2      SRAM
+• To find frame: decode part of address
+                                                                            3
+   − Which part?
+
+
+
+
+                                                                wordlines
+   − 32-bit address
+   − 32B blocks ® 5 lowest bits locate byte in block
+      • These are called offset bits
+   − 1024 frames ® next 10 bits find frame                                  1021
+      • These are the index bits                                            1022
+
+   − Note: nothing says index must be these bits                            1023
+
+   − But these work best (why?)                                                 bitlines
+   − Cache lines are same as cache block
+               [31:15]                index [14:5]      [4:0]                <<
+
+                                                     address                data
+                                                                                     17
+Knowing that You Found It: Tags
+                                                                                         tag
+• Each frame can hold one of 217 blocks                                      0
+                                                                                         bits
+                                                                             1
+   − All blocks with same index bit pattern
+                                                                             2
+• How to know which if any is currently there?                               3
+   − To each frame attach tag and valid bit
+
+
+
+
+                                                                 wordlines
+   − Compare frame tag to address tag bits
+      • No need to match index bits (why?)
+• Lookup algorithm                                                           1021
+                                                                                         valid
+                                                                                         bit
+   − Read frame indicated by index bits                                      1022
+
+   − If (tag matches && valid bit set)                                       1023
+
+       then Hit à data is good
+                                                                                    =
+       else Miss à data not good
+               tag [31:15]             index [14:5]      [4:0]                <<
+
+                                                      address                data hit/miss?
+                                                                                    18
+Calculating Tag Overhead
+• 32KB cache means cache holds 32KB of data
+   − Called capacity
+   − Tag storage is considered overhead
+
+
+• Tag overhead of 32KB cache with 1024 32B frames
+
+
+
+
+                                                    19
+Calculating Tag Overhead
+• 32KB cache means cache holds 32KB of data
+   − Called capacity
+   − Tag storage is considered overhead
+
+
+• Tag overhead of 32KB cache with 1024 32B frames
+   − 32B frames ® 5-bit offset
+   − 1024 frames ® 10-bit index
+   − 32-bit address – 5-bit offset – 10-bit index = 17-bit tag
+   − (17-bit tag + 1-bit valid)* 1024 frames = 18Kb tags = 2.2KB tags
+   − ~6% overhead
+
+
+
+
+                                                                  20
+Handling a Cache Miss
+• What if requested data isn’t in the cache?
+   − How does it get in there?
+
+
+• Cache controller: finite state machine
+   − Implements the logic to handle miss accesses to cache
+   1. Remembers miss address
+   2. Accesses next level of memory for data
+   3. Waits for response from next level
+   4. Upon receiving response
+      • Fills cache:
+           • Writes data/tag into proper location in cache
+           • Uses a replacement policy
+
+
+                                                             21
+Cache Performance Equation
+             • Access: read or write to cache
+             • Hit: desired data found in cache
+     thit    • Miss: desired data not found in cache
+                − Must get from another component
+  Cache      • Fill: action of placing data into cache
+     %miss
+             • %miss (miss-rate): #misses / #accesses
+             • thit: time to read data from (write data to)
+     tmiss     cache
+             • tmiss: time to put data into cache
+
+             • Performance metric: average access time
+                        tavg = thit + %miss * tmiss
+                                                         22
+Cache Miss Paper Simulation
+• 4-bit addresses ® 16B low-level memory (ie L2$)
+    − Simpler cache diagrams than 32-bits
+
+• 8B cache, 2B blocks
+    − Figure out number of frames: 4 (capacity / block-size)
+    − Figure out how address splits into offset/index/tag bits
+        • Offset: least-significant log2(block-size) = log2(2) = 1 ® 0000
+        • Index: next log2(number-of-frames) = log2(4) = 2 ® 0000
+        • Tag: rest = 4 – 1 – 2 = 1 ® 0000
+
+• Cache diagram
+    − 0000|0001 are addresses of bytes in this block, values don’t matter
+
+Cache contents                                Address   Outcome
+Frame00      Frame01   Frame10    Frame11
+0000|0001 0010|0011 0100|0101 0110|0111
+
+                                                                     24
+Cache Miss Paper Simulation
+• 8B cache, 2B blocks                 tag (1 bit)               index (2 bits)   1 bit
+
+Cache contents (prior to access)                    Address   Outcome
+Frame00       Frame01       Frame10      Frame11
+0000|0001 0010|0011 0100|0101 0110|0111 1100                  Miss
+0000|0001 0010|0011 1100|1101 0110|0111 1110                  Miss
+0000|0001 0010|0011 1100|1101 1110|1111 1000                  Miss
+1000|1001 0010|0011 1100|1101 1110|1111 0011                  Hit
+1000|1001 0010|0011 1100|1101 1110|1111 1000                  Hit
+1000|1001 0010|0011 1100|1101 1110|1111 0000                  Miss
+0000|0001 0010|0011 1100|1101 1110|1111 1000                  Miss
+
+
+
+
+                                                                                 25
+Capacity and Performance
+• Simplest way to reduce %miss: increase capacity
+   + Miss rate decreases monotonically
+   – However thit increases
+
+
+• Therefore, instead of increasing capacity
+   − We assume a given capacity, then manipulate %miss by changing
+     the organization
+       • Increase/decrease block sizes
+       • Increase/decrease associativity
+
+• Blocks are sometimes called lines (cache lines)
+
+
+
+
+                                                                29
+Block Size
+• Increase block size (line size)
+   − Exploit spatial locality                                  512*512bit
+   − Notice index/offset bits change                           SRAM
+      • Original: 32KB (1024*256b)                             0
+          • Offset = log2(256/8) = 5                           1
+
+          • Index = log2(1024) = 10                            2
+
+      • New: 32KB (512*512b)
+          • Offset = log2(512/8) = 6                           510
+          • Index = log2(512) = 9                              511
+   − Tag remains the same                              9-bit
+                                                                               =
+                                                     block size­
+                                  [31:15]   [14:6]        [5:0]
+                                                                     <<
+
+                                                     address         data hit?
+                                                                          30
+Block Size and Tag Overhead
+• Tag overhead of 32KB cache with 1024 32B frames
+   − 32B frames ® 5-bit offset
+   − 1024 frames ® 10-bit index
+   − 32-bit address – 5-bit offset – 10-bit index = 17-bit tag
+   − (17-bit tag + 1-bit valid) * 1024 frames = 18Kb tags = 2.2KB tags
+   − ~6% overhead ((2.2KB/32KB) * 100)
+
+
+• Tag overhead of 32KB cache with 512 64B frames
+   − 64B frames ® 6-bit offset
+   − 512 frames ® 9-bit index
+   − 32-bit address – 6-bit offset – 9-bit index = 17-bit tag
+   − (17-bit tag + 1-bit valid) * 512 frames = 9Kb tags = 1.1KB tags
+   + ~3% overhead ((1.1KB/32KB )* 100)
+
+                                                                  31
+Block Size Cache Paper Simulation
+• 8B cache, 4B blocks                tag (1 bit)               index (1 bit)   2 bits
+
+Cache contents (prior to access)                   Address   Outcome
+Frame0                      Frame1
+0000|0001|0010|0011         0100|0101|0110|0111    1100      Miss
+0000|0001|0010|0011         1100|1101|1110|1111    1110      Hit (spatial prefetch.)
+0000|0001|0010|0011         1100|1101|1110|1111    1000      Miss
+1000|1001|1010|1011         1100|1101|1110|1111    0011      Miss
+0000|0001|0010|0011         1100|1101|1110|1111    1000      Miss
+1000|1001|1010|1011         1100|1101|1110|1111    0000      Miss
+0000|0001|0010|0011         1100|1101|1110|1111    1000      Miss
+1000|1001|1010|1011         1100|1101|1110|1111    0000      Miss
+     + Spatial “prefetching”: miss on 1100 brought in 1110
+     – Conflicts: miss on 1000 kicked out 0011
+          – This would not have happened earlier (smaller blocks)
+
+                                                                               32
+Block Size and Miss Penalty
+• Does increasing block size increase tmiss?
+   − Don’t larger blocks take longer to read, transfer, and fill?
+   − They do, but…
+
+
+• tmiss of an isolated miss is not affected
+   − Critical Word First
+   − Requested word fetched first, pipeline restarts immediately
+   − Remaining words in block transferred/filled in the background
+
+
+• tmisses of a cluster of misses will suffer
+   − Reads/transfers/fills of two misses can’t happen at the same time
+   − Latencies can start to pile up
+   − But, this is a bandwidth problem
+
+                                                                     36
+Conflicts
+• What about pairs like 0000/1000 conflict
+     − These will conflict regardless of block-size
+• Can we allow pairs like these to simultaneously reside?
+     − Yes, but we have to reorganize cache to do so
+Cache contents (prior to access)                  Address   Outcome
+Frame0                      Frame1
+0000|0001|0010|0011         0100|0101|0110|0111   1100      Miss
+0000|0001|0010|0011         1100|1101|1110|1111   1110      Hit (spatial prefetch.)
+0000|0001|0010|0011         1100|1101|1110|1111   1000      Miss
+1000|1001|1010|1011         1100|1101|1110|1111   0011      Miss
+0000|0001|0010|0011         1100|1101|1110|1111   1000      Miss
+1000|1001|1010|1011         1100|1101|1110|1111   0000      Miss
+0000|0001|0010|0011         1100|1101|1110|1111   1000      Miss (conflict)
+1000|1001|1010|1011         1100|1101|1110|1111   0000      Miss (conflict)
+
+                                                                                37
+Set-Associativity
+                                                                        ways
+• Set-associativity                                          0            512             tags
+                                                             1            513
+   − Block can reside in one of few frames
+                                                             2            514
+   − Frame groups called sets                                3            515
+   − Each frame in set called a way
+
+
+
+
+                                                 wordlines
+   − This is 2-way set-associative (SA)
+   − 1-way ® direct-mapped (DM)
+   − 1-set ® fully-associative (FA)
+                                                             511          1023
+                                                                                          valid
+                                                                                          bit
+   + Reduces conflicts
+   – Increases latencyhit:                                          =            =
+       • additional tag match
+       & muxing
+
+
+
+        tag [Z:Y]               index [Y:X]   [X:0]                <<
+                                                                                     38
+Set-Associativity
+                                                                    ways
+• 2-way set-associative                                  0            512             tags
+                                                         1            513
+  − 32KB with 32B blocks
+                                                         2            514
+  − Offset = 5                                           3            515
+  − Index = 9
+
+
+
+
+                                             wordlines
+  − Tag = 18
+
+
+                                                         511          1023
+                                                                                      valid
+                                                                                      bit
+
+                                                                =            =
+
+
+
+
+       tag [31:14]         index [13:5]   [4:0]                <<
+                                                                                 39
+Set-Associativity
+                                                                          ways
+                                                               0            512             tags
+• Lookup algorithm
+                                                               1            513
+   − Use index bits to find set                                2            514
+   − Read data/tags in all frames in parallel                  3            515
+   − Any (tag match && valid bit set)
+
+
+
+
+                                                   wordlines
+      • Then hit
+      • Else miss
+                                                               511          1023
+                                                                                            valid
+   − Notice tag/index/offset bits                                                           bit
+      • Only 9-bit index (versus                                      =            =
+      10-bit for direct mapped)
+   − Notice block numbering
+
+
+
+         tag [31:14]             index [13:5]   [4:0]                <<
+                                                                                       40
+Associativity and Miss Paper Simulation
+• 8B cache, 2B blocks, 2-way set-associative
+   • Offset: ??
+   • Index: ???
+   • Tag: ???
+
+
+
+
+                                               41
+Associativity and Miss Paper Simulation
+• 8B cache, 2B blocks, 2-way set-associative
+Cache contents (prior to access)                    Address   Outcome
+Set0.Way0     Set0.Way1     Set1.Way0   Set1.Way1
+0000|0001 0100|0101 0010|0011 0110|0111 1100                  Miss
+1100|1101 0100|0101 0010|0011 0110|0111 1110                  Miss
+1100|1101 0100|0101 1110|1111 0110|0111 1000                  Miss
+1100|1101 1000|1001 1110|1111 0110|0111 0011                  Miss
+1100|1101 1000|1001 1110|1111 0010|0011 1000                  Hit
+1100|1101 1000|1001 1110|1111 0010|0011 0000                  Miss
+0000|0001 1000|1001 1110|1111 0010|0011 1000                  Hit (avoid conflict)
+
+     + Avoid conflicts: 0000 and 1000 can both be in set 0
+     – May introduce some new conflicts
+        • Happens, but conflict avoidance usually dominates
+
+                                                                               42
+Replacement Policies
+• Set-associative caches present a new design choice
+   − On cache miss, which block in set to replace (kick out)?
+• Some options
+   − Random
+   − FIFO (first-in first-out)
+      • Does not match temporal locality
+          • Loops w/ same mem location accessed continuously
+   − LRU (least recently used)
+      • Fits with temporal locality, LRU = least likely to be used in future
+   − NMRU (not most recently used)
+      • An easier to implement approximation of LRU
+      • Note: NMRU is LRU for 2-way set-associative caches
+   − Belady’s: replace block that will be used furthest in future
+      • Unachievable optimum (used for comparison)
+
+                                                                      43
+LRU Algorithm
+• Determines which cache block has been used least-
+  recently
+
+• Cache monitors the usage of cache blocks:
+   − Aging using age counts associated with each cache block
+   − For a 4-way set-associative-mapped cache, two bits of additional
+     storage can be used to monitor the age of each cache block in a
+     set
+   − When a cache block in a set is used / replaced, its age is
+     reset and all other ages lower than the previous age are
+     incremented
+
+
+• LRU leverages temporal locality
+
+                                                                  44
+LRU: Example 4-way set-associative
+                   Action                Block 0   Block 1   Block 2   Block 3
+                                           Age       Age       Age       Age
+Initial ages                                       0         2         1
+Cache hit in Block 3                               1         2         0
+Cache miss with data moved to Block 0    0         2         3         1
+Cache miss with data replacing Block 2   1         3         0         2
+Cache hit in Block 3                     2         3         1         0
+
+
+
+
+                                                                           45
+Associativity and Performance
+• Higher associative caches
+   + Have lower %miss
+   – However thit increases
+
+
+• Block-size and number of sets are usually powers of two
+   − Makes indexing easier (just rip bits out of the address)
+
+
+
+
+                                                                49
+Physical Cache Layout
+• Note: data and tags actually physically separate
+   − Split into two different arrays
+
+
+• What method to use to access data and tags?
+   − Serial
+   − Parallel
+   − Both?
+
+
+
+
+                                                     50
+Serial Tag Access
+• Tag match first, then access only one data block
+   − Advantages: single block read
+   − Disadvantages: slow
+
+                    tag      2-bit index   offset
+                                                      2-bit
+
+                                                              4-bit
+
+
+
+
+                                      = = = =
+                                                      2-bit
+
+
+                                     Only one block transferred
+                                                                             <<
+                                                                      data        51
+Parallel Tag and Data Access
+• Index tag and data at the same time
+   − Advantages: faster
+   − Disadvantages: multiple block reads, 4-1 mux
+
+         tag     2-bit index   offset
+
+                                                 Four blocks transferred
+                                         2-bit
+
+
+
+
+                                        2-bit
+                          = = = =
+
+                                                     <<
+
+                                                    data             52
+Best of Both? Way Prediction
+• Predict way of block
+   − Just a “hint”
+   − Use the index plus some tag bits
+   − Update on mis-prediction or replacement
+
+
+
+
+                 tag      2-bit index   offset
+
+• Advantages                                          2-bit
+   − Fast
+   − Low-power                                                    4-bit
+• Disadvantage
+   − More “misses”                                 Way
+                                                              2-bit
+   − ~90% accurate                               Predictor
+
+   for 2-way
+                                   = = = =                    =
+                                                                                 <<
+                                                        hit               data        53
+Classifying Misses: 3C Model
+• Divide cache misses into three categories
+   − Compulsory (cold): never seen this address before
+      • Startup
+
+   − Capacity: miss caused because cache is too small
+      • Consecutive accesses to block separated by access to at least N
+        other distinct blocks (N is number of frames in cache)
+
+   − Conflict: miss caused because cache associativity is too low
+      • All other misses
+
+   − (Coherence): miss due to external invalidations
+      • Only in shared memory multiprocessors (later)
+
+
+
+                                                                    54
+Miss Rate: ABC Take Away
+• Associativity (increasing)
+   + Decreases conflict misses
+   – Increases thit
+
+• Block size (increasing)
+   – Increases conflict misses
+   + Decreases compulsory misses
+   − Negligible effect on thit
+
+• Capacity (increasing)
+   + Decreases capacity misses
+   – Increases thit
+
+
+
+
+                                   55
+One (of many possible) Optimizations
+• Victim buffer
+  − Reduces conflict misses
+
+
+• Write buffer and store buffers
+
+
+
+
+                                       56
+Reducing Conflict Misses: Victim Buffer
+• Conflict misses: not enough associativity
+   − High-associativity is expensive, but also rarely needed
+      • 3 blocks mapping to same 2-way set and accessed (XYZ)+
+
+
+• Victim buffer (VB): small FA cache (e.g. 8 entries)
+   − Sits on I$/D$ miss path
+   − Small, so very fast
+   − Blocks kicked out of I$/D$ placed in VB                I$/D$
+   − On miss, check VB
+       • If hit? Place block back in I$/D$
+       • Else initiate miss
+                                                           VB
+   − 8 extra ways, shared among all sets
+       + Only a few sets will need it at any given time
+   + Very effective in practice                              L2 $
+
+                                                                 57
+Write Issues
+• So far we have looked at reading from cache (loads)
+
+• What about writing into cache (stores)?
+
+• Several new issues
+   − Tag/data access
+   − Write-through vs. write-back
+   − Write-allocate vs. write-not-allocate
+   − Inclusion vs. Exclusion
+
+
+
+
+                                                        58
+Tag/Data Access
+• Reads: read tag and data in parallel
+   − Tag mis-match ® data is garbage (OK, stall until good data arrives)
+
+
+• Writes: read tag, write data in parallel?
+
+
+
+
+                                                                  59
+Tag/Data Access
+• Reads: read tag and data in parallel
+   − Tag mis-match ® data is garbage (OK, stall until good data arrives)
+
+
+• Writes: read tag, write data in parallel?
+   − Tag mis-match ® clobbered data (oops)
+
+
+• Writes are a pipelined two step (multi-cycle) process
+   − Step 1: match tag
+   − Step 2: write to matching way
+
+
+
+
+                                                                  60
+Write Propagation
+• When to propagate new value to (lower level) memory?
+
+• Option #1: Write-through: immediately
+   − Immediately send the write to the next level
+   + Conceptually simple
+   + Uniform latency on misses
+      + Dirty/clean miss: 1 transaction (write next level)
+   – Requires additional bus bandwidth
+
+
+
+
+                                                             61
+Write Propagation
+• When to propagate new value to (lower level) memory?
+
+• Option #2: Writeback: when block is replaced
+   − Requires additional “dirty” bit per block
+      + Minimal bus bandwidth
+          • Only write back dirty blocks
+      – Non-uniform miss latency
+          • Clean miss: 1 transaction (fill)
+          • Dirty miss: 2 transactions (writeback & fill)
+
+
+
+
+                                                            62
+Write Miss Handling
+• How is a write miss actually handled?
+
+• Write-allocate: fill block from next level, then write value
+  into it
+   + Decreases read misses (next read to same block will hit)
+   – Requires additional bandwidth
+   − Used with writeback caches
+
+
+• Write-not-allocate: just write to next level, no allocate
+   – Potentially more read misses
+   + Uses less bandwidth
+   − Used with write-through
+
+
+                                                                63
+Write buffer (WB)
+• Write buffer (WB): between cache and memory
+  − Write-through cache
+     • Helps propagate data to memory                              $
+     • Write to buffer to avoid waiting for memory                 2
+                                                                       1
+                                                         WB
+  − Writeback cache                                           4          3
+     • Helps with dirty misses
+     • Allows you to do read first                            Next-level-$
+         • Step#1: Send “fill” request to next-level
+         • Step#2: While waiting, write dirty block to buffer
+         • Step#3: When new blocks arrives, put it into cache
+         • Step#4: Write buffer contents to next-level
+
+
+
+
+                                                                    64
+Write Misses and Store Buffers
+• Read miss?
+   − Load can’t go on without the data, it must stall
+• Write miss?                                                      Processor
+   − Technically, no instruction is waiting for data, why stall?
+                                                                     SB
+• Store buffer: a small buffer
+   − Stores put address/value to store buffer, keep going
+   − Store buffer writes stores to D$ in the background             Cache
+   − Loads must search store buffer (in addition to D$)
+   + Eliminates stalls on write misses (mostly)
+                                                         WB
+
+
+                                                                   Next-level
+                                                                    cache
+
+
+                                                                       65
+Split vs. Unified Caches
+• Split I$/D$: insns and data in different caches
+   − To minimize structural hazards and thit
+   − Larger unified I$/D$ would be slow, 2nd port even slower
+
+
+• Unified L2, L3: insns and data together
+   − To minimize %miss
+   + Fewer capacity misses: unused insn capacity can be used for data
+   – More conflict misses: insn/data conflicts
+      • A much smaller effect in large caches
+   − What about simultaneous I$ and D$ misses?
+      • Quite rare
+
+
+
+
+                                                                 66
+Hierarchy: Inclusion versus Exclusion
+• Inclusion
+  − A block in the L1 is always in the L2
+
+
+• Exclusion
+  − Block is either in L1 or L2 (never both)
+
+
+• Non-inclusive …
+  − Somewhere in between
+  − No strict requirement for inclusivity or exclusivity
+
+
+
+
+                                                           67
+Recall Memory Performance Equation
+     CPU           • For memory component M
+                      − Access: read or write to M
+           thit       − Hit: desired data found in M
+                      − Miss: desired data not found in M
+                         • Must get from another (slower) component
+ M                    − Fill: action of placing data in M
+           %miss
+                      − %miss (miss-rate): #misses / #accesses
+           tmiss      − thit: time to read data from (write data to) M
+                      − tmiss: time to read data into M
+
+                   • Performance metric
+                      − tavg: average access time
+                               tavg = thit + %miss * tmiss
+                                                                    68
+Hierarchy Performance
+                                 tavg
+      CPU
+                                 tavg-M1
+            tavg = tavg-M1       thit-M1 + (%miss-M1*tmiss-M1)
+       M1                        thit-M1 + (%miss-M1*tavg-M2)
+            tmiss-M1 = tavg-M2   thit-M1 + (%miss-M1*(thit-M2 + (%miss-M2*tmiss-M2)))
+      M2                         thit-M1 + (%miss-M1* (thit-M2 + (%miss-M2*tavg-M3)))
+                                 …
+            tmiss-M2 = tavg-M3
+
+  M3
+
+            tmiss-M3 = tavg-M4
+
+
+ M4
+
+                                                                              69
+Summary
+• Average access time of a memory component
+   − latencyavg = latencyhit + %miss * latencymiss
+   − Hard to get low latencyhit and %miss in one structure ® hierarchy
+• Memory hierarchy
+   − Cache (SRAM) ® memory (DRAM) ® swap (Disk)
+   − Smaller, faster, more expensive ® bigger, slower, cheaper
+• Cache ABCs (capacity, associativity, block size)
+   − 3C miss model: compulsory, capacity, conflict
+• Performance optimizations
+   − %miss: prefetching
+   − latencymiss: victim buffer, critical-word-first
+• Write issues
+   − Write-back vs. write-through/write-allocate vs. write-not-allocate
+
+
+                                                                    71
+End
+• Special thanks Prof. Milo Martin, Prof. Amir Roth, Prof.
+  Mark Hill, Prof. Guri Sohi, Prof. Jim Smith, Prof. Daniel
+  Sorin, and Prof. David wood. These slides heavily borrow
+  theirs.
+
+
+
+
+                                                        72
+
