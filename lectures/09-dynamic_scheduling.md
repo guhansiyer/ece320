@@ -224,3 +224,151 @@ Renaming lets the second multiply dispatch two cycles earlier; copying operands 
 Both schemes split decode into **in-order dispatch** and **out-of-order issue** to improve FU utilization. Scoreboarding stalls for WAR/WAW hazards; Tomasulo removes them with tagged producers and operand copies in reservation stations.
 
 Tomasulo distributes hazard detection, but CDB tag matching requires many associative comparisons. CDB bandwidth and reservation-station capacity remain structural limits. Precise state and speculation are the next extensions.
+
+## Superscalar, OoO, Speculation
+
+Superscalar pipelines, out-of-order execution and branch speculation are three concepts that work well when used together.
+
+If we have a CPI >= 1, we can overcome it with superscalar pipelines. If superscalar increases hazards, we can overcome it with dynamic scheduling. If RAW dependencies are still a problem, we can overcome it with a large instruction window. If we have an issue filling a large window because of branches, we can overcome it with speculation.
+
+## Speculation and Precise Interrupts
+
+> Why are we discussing these together?
+
+Sequential semantics for interrupts dictate that all instructions before an interrupt should be complete, and all instructions after should look as if they never started. We want the same thing for a mis-predicted branch.
+
+Precise interrupts are hard because out-of-order completion means you must undo post-interrupt writebacks.
+
+> With out-of-order pipe, precise interrupts and mis-speculation recovery are the same problem.
+
+They have the same solution: implementing the ability to abort and restart at every instruction. This is called **precise state**.
+
+## The Problem with Precise State
+
+The problem is in the writeback stage (WB). It mixes two things together that should be separate:
+
+* Broadcasts values to RS, ok to be out-of-order.
+* Writes value to registers, should be in-order.
+
+The solution is to split writeback into two stages.
+
+## Reorder Buffer (ROB)
+
+The instruction buffer now becomes the reorder buffer (ROB), and WB is split into two stages: Complete (CM) and Retire (RT).
+
+* CM: completed result values written to ROB out-of-order.
+* RT: Retire (also called commit or graduate) updates the architectural register file or commits a store to `D$`, in program order. An incomplete instruction at the ROB head blocks younger instructions from retiring.
+
+![Pipeline split into out-of-order completion and in-order retirement](images/09/09-8.png)
+
+## Memory Ordering Buffer (MOB)
+
+Completed stores keep their address and data in the MOB until retirement. When a store retires, its entry at the head of the store queue writes to `D$`. A load can check the MOB and `D$` in parallel. If an older buffered store matches the load address, the load forwards from the youngest such store once its data is ready.
+
+![Simplified P6 pipeline showing the ROB, MOB, and store-to-load forwarding path](images/09/09-9.png)
+
+## Tomasulo with a ROB: P6 Style
+
+The lecture's simplified Pentium Pro (P6) model keeps the **ROB and reservation stations separate**. The RS hold instructions waiting to execute; the ROB holds instructions in program order until retirement. The example uses one ALU station, one load station, one store station, and two FP stations with three-cycle FP execution.
+
+![P6 organization with separate reservation stations, reorder buffer, and register file](images/09/09-10.png)
+
+* The ROB tail allocates entries in order; the head identifies the oldest unretired instruction. An entry records its destination register `R`, result `V`, and whether it is complete.
+* A producer tag is now a **ROB entry number**, so the result can still be identified after its reservation station has been freed.
+* The register status table records the latest producer tag and a **ready-in-ROB** bit. `0` means read the architectural register file; a nonzero tag without `+` means wait for that producer; a tag with `+` means read its result from the ROB.
+
+### P6 Pipeline
+
+The stages are `IF → DS → IS → EX → CM → RT`.
+
+1. **Dispatch (DS):** Stall if a needed RS, ROB, or MOB entry is unavailable. Otherwise allocate entries, assign the ROB number as the RS output tag, and map the destination to that tag with its ready bit clear.
+
+   ![P6 dispatch allocating a ROB entry and updating the destination tag](images/09/09-11.png)
+
+   Read each source using the mapping that preceded the destination update. Copy the value from the register file or ROB if ready; otherwise copy the producer tag into the RS.
+
+   ![P6 dispatch copying a pending source tag and a ready ROB value](images/09/09-12.png)
+
+2. **Issue (IS):** An instruction can issue when its operands and functional unit are ready. Waiting operands monitor the common data bus (CDB) for a matching tag.
+3. **Execute (EX):** The functional unit executes the operation. The RS can be freed when the unit takes over the instruction; the ROB tag keeps the producer identifiable through completion.
+4. **Complete (CM):** Wait for the CDB if necessary, then broadcast `<value, tag>`, fill the tagged ROB entry, and mark it complete. Matching reservation stations capture the value. Set the destination's ready-in-ROB bit only if its current mapping still matches the completing tag.
+
+   ![P6 completion writing the ROB and forwarding a result to waiting reservation stations](images/09/09-13.png)
+
+5. **Retire (RT):** Wait for the ROB head to complete and check for exceptions before making its effects visible. A register result goes to the architectural register file, and a store commits from the MOB to `D$`. Clear the register's status only if it still names the retiring producer. Free the ROB entry and any corresponding MOB entry.
+
+   ![P6 retirement copying the completed head entry to the register file](images/09/09-14.png)
+
+### P6 Example: SAX Through Cycle 11
+
+Use the same two SAX iterations as before. The slides call the byte-offset register `r1`; it is `x1` in the earlier example. `ROB#1` through `ROB#7` identify the instructions in program order. The MOB tracks the load and store addresses alongside the ROB in the diagrams.
+
+![Initial SAX instruction order and empty P6 reservation stations](images/09/09-15.png)
+
+| ROB | Instruction | DS | IS | EX through cycle 11 | CM | RT |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | First `ldf` | 1 | 2 | 3 | 4 | 5 |
+| 2 | First `mulf` | 2 | 4 | 5-7 | 8 | 9 |
+| 3 | First `stf` | 3 | 8 | 9 | 10 | 11 |
+| 4 | `addi` | 4 | 5 | 6 | 7 | - |
+| 5 | Second `ldf` | 5 | 7 | 8 | 9 | - |
+| 6 | Second `mulf` | 6 | 9 | 10-11 (still executing) | - | - |
+| 7 | Second `stf` | 9 | - | - | - | - |
+
+`-` means the stage has not happened by the end of cycle 11. The table follows the normal execution path; the precise-state example below changes what happens at cycle 11.
+
+* **Cycles 1-3:** Dispatch the first load, multiply, and store. The multiply waits on `ROB#1` for `f0`; the store waits on `ROB#2` for `f4` and already has the old `r1`. The first load issues in cycle 2 and executes in cycle 3, freeing its RS.
+* **Cycle 4:** The load completes and broadcasts `f0`, waking the first multiply for issue. `addi` dispatches to `ROB#4`.
+
+![Cycle 4: the first load writes the ROB and wakes the first multiply](images/09/09-16.png)
+
+* **Cycles 5-6:** The first load retires. The second load dispatches and waits for `ROB#4` to produce the new `r1`. The second multiply dispatches and remaps `f4` to `ROB#6`; the first store keeps waiting on `ROB#2` for the older value.
+
+![Cycle 6: the two multiplies have distinct ROB tags for f4](images/09/09-17.png)
+
+* **Cycles 7-8:** `addi` completes in cycle 7, waking the second load. The first multiply completes in cycle 8, waking the first store without changing the newer `f4` mapping. The second store cannot dispatch in either cycle because the store RS is busy.
+* **Cycle 9:** The first multiply retires. The second load completes and wakes the second multiply. The first store executes and frees its RS, so the second store can dispatch. It takes `r1` from the completed but unretired `ROB#4` and waits on `ROB#6` for `f4`.
+
+![Cycle 9: the second store takes its address operand from the ROB](images/09/09-18.png)
+
+* **Cycles 10-11:** The first store completes in cycle 10 and retires in cycle 11 on the normal path. The younger `addi` and second load are already complete, but neither can retire ahead of that store.
+
+![Cycle 11: the first store reaches retirement ahead of younger completed instructions](images/09/09-19.png)
+
+## Precise State with the ROB
+
+An exception may be detected before retirement, but it is handled when its instruction reaches the ROB head. At that point, all older instructions have committed. The faulting instruction and younger instructions have not updated the architectural register file or committed their stores. In the lecture's recovery scheme, discard their ROB, RS, and MOB entries and clear the register status table. An empty status entry now points back to the committed register file. Once the handler has resolved a restartable fault, resume from the faulting instruction.
+
+### Restarting the SAX Store
+
+* **Cycle 11:** Suppose the first `stf` reaches retirement with an exception. Its store must not update `D$`. The younger `addi` and second load have completed only into the ROB.
+
+  ![Cycle 11: an exception prevents the store at the ROB head from retiring](images/09/09-20.png)
+
+* **Cycle 12:** Flush the faulting store and all younger work, including the buffered stores and register mappings. The first load and multiply have already retired, so their values remain available.
+
+  ![Cycle 12: speculative ROB, register status, and reservation station state is cleared](images/09/09-21.png)
+
+* **Cycles 13-14:** The example resumes at the first store in cycle 13. It reads committed `f4` and the old `r1` from the register file. It issues in cycle 14 as `addi` dispatches again. The cycle numbers illustrate the restart sequence without modeling the handler's latency.
+
+  ![Cycle 13: the store is dispatched again using committed register values](images/09/09-22.png)
+
+  The slide still marks FP2 busy at restart, but the flush in cycle 12 cleared the second multiply; its FP2 reservation does not survive recovery.
+
+## P6 Performance and Organization
+
+The example has similar execution timing to regular Tomasulo, with an extra in-order retirement stage. Keeping unretired values separate makes recovery straightforward. The slides cite Pentium Pro, PowerPC, and AMD K6 as examples of this style.
+
+![P6 value paths linking the register file, ROB, reservation stations, and functional units](images/09/09-23.png)
+
+The cost is moving values from the register file or ROB to the RS and from the ROB back to the register file. Several possible operand sources require buses and multiplexers, and placing full values beside tags in the RS makes the data paths longer.
+
+## MIPS R10K: Physical Register Renaming
+
+The R10K-style organization separates control from data. The ROB and reservation stations track instruction order, operand tags, and readiness. One **physical register file (PRF)**, placed close to the functional units, holds both committed and speculative register values. Results stay in their assigned physical registers rather than being copied through the ROB or into a separate architectural register file at retirement.
+
+![R10K organization with a register map, free list, tag-only scheduling, and a physical register file](images/09/09-24.png)
+
+* There are more physical registers than architectural registers. The **register map table** maps each architectural name to a physical register. Unlike P6, there is no special zero mapping meaning “read the architectural register file.”
+* Each destination gets a fresh physical register from the **free list**. Source operands keep the physical tags they were assigned. WAR and WAW hazards disappear because different versions of the same architectural register occupy different locations; RAW dependencies still wait for the producer.
+* The ROB records the new and old physical tags for each destination. When the overwriting instruction retires, its old physical register can return to the free list. Retirement does not copy the result value.
