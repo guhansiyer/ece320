@@ -372,3 +372,158 @@ The R10K-style organization separates control from data. The ROB and reservation
 * There are more physical registers than architectural registers. The **register map table** maps each architectural name to a physical register. Unlike P6, there is no special zero mapping meaning “read the architectural register file.”
 * Each destination gets a fresh physical register from the **free list**. Source operands keep the physical tags they were assigned. WAR and WAW hazards disappear because different versions of the same architectural register occupy different locations; RAW dependencies still wait for the producer.
 * The ROB records the new and old physical tags for each destination. When the overwriting instruction retires, its old physical register can return to the free list. Retirement does not copy the result value.
+
+### R10K Pipeline
+
+The stages remain `IF, DS, IS, EX, CM, RT`, but operands and results now stay in the PRF.
+
+* **Dispatch (DS):** Stall if a required RS, ROB, or MOB entry is unavailable, or if an instruction needs a destination register and the free list is empty. Capture source mappings, allocate a new physical destination, save the previous mapping as `Told` in the ROB, and update the map table. Stores have no register destination and need no new physical register.
+* **Issue (IS):** Wait for source tags to be ready and the functional unit to be available, then read operands from the PRF.
+* **Execute (EX):** Execute the operation and free the RS once it is no longer needed. The physical destination tag stays with the executing instruction.
+* **Complete (CM):** Write the result to the destination physical register, broadcast its tag to wake dependent instructions, and mark the ROB entry complete. The scheduling CDB carries tags; values travel on the FU-to-PRF path.
+* **Retire (RT):** Wait for the ROB head to complete and check for exceptions. Commit a store from the MOB if needed, free ROB/MOB entries, and return the previous physical destination `Told` to the free list. Keep the new physical destination allocated.
+
+Retirement makes a result architecturally committed without moving its bits. An old physical register cannot be freed when its replacement merely dispatches or completes: older instructions may still need its value, and recovery may need its mapping.
+
+### R10K Data Structures
+
+![R10K ROB, map table, free list, and reservation stations containing physical tags and ready bits](images/09/09-25.png)
+
+* **ROB:** instruction order, new destination `T`, old destination `Told`, completion status, and associated memory information.
+* **Map table:** the latest physical tag for every architectural register, plus readiness. A `+` means the physical register contains a ready value; mappings are never zero.
+* **RS:** operation, destination tag, and source tags with ready bits. Operand values are read at issue rather than copied into the RS.
+* **Free list:** physical registers available for new destinations. Allocation removes a register; retirement or rollback can return one.
+
+### R10K Example: SAX
+
+Use the same instructions, functional units, and latencies as the P6 example. Initially `f0`, `f2`, `f4`, and `r1` map to ready `PR#1`, `PR#2`, `PR#3`, and `PR#4`. The free list contains `PR#5` through `PR#8`.
+
+| Instruction | New destination `T` | Previous destination `Told` | Source tags |
+| --- | --- | --- | --- |
+| First `ldf f0,X(r1)` | `PR#5` | `PR#1` | `r1`: `PR#4` |
+| First `mulf f4,f0,f2` | `PR#6` | `PR#3` | `PR#5`, `PR#2` |
+| First `stf f4,Z(r1)` | None | None | `PR#6`, `PR#4` |
+| `addi r1,r1,4` | `PR#7` | `PR#4` | `PR#4` |
+| Second `ldf f0,X(r1)` | `PR#8` | `PR#5` | `r1`: `PR#7` |
+| Second `mulf f4,f0,f2` | `PR#1` (reused) | `PR#6` | `PR#8`, `PR#2` |
+| Second `stf f4,Z(r1)` | None | None | `PR#1`, `PR#7` |
+
+The issue, execute, and completion cycles are the same as the P6 SAX example. The important difference is where results live and how physical registers are reclaimed.
+
+* **Cycles 1-3:** The first load and multiply allocate `PR#5` and `PR#6`. The store keeps source tags `PR#6` and `PR#4`, so it will use the first multiply's result and the old loop offset even after the map table changes. The load issues in cycle 2 and executes in cycle 3.
+* **Cycle 4:** The load writes `PR#5` and broadcasts that tag. The first multiply becomes ready and issues. `addi` allocates `PR#7` while retaining `PR#4` as its source and old destination.
+
+![R10K cycle 4: load completion wakes a multiply using the physical register tag](images/09/09-26.png)
+
+* **Cycle 5:** The first load retires and returns its old destination `PR#1` to the free list. The second load allocates `PR#8` and waits on `PR#7` for the updated offset. The current `f0` mapping becomes `PR#8`; the first multiply still reads `PR#5`.
+* **Cycle 6:** The second multiply reuses the freed `PR#1` as its destination and saves `PR#6` as `Told`. Two versions of `f4` coexist without a WAW stall. `addi` executes, while the second load still waits for its result.
+
+![R10K cycle 6: a freed physical register is reused for the second multiply](images/09/09-27.png)
+
+* **Cycles 7-8:** `addi` completes into `PR#7`, allowing the second load to issue in cycle 7. The first multiply completes into `PR#6` in cycle 8, waking the first store. The second store stalls at dispatch because the store RS is busy. `addi` cannot retire ahead of the older instructions.
+* **Cycle 9:** The first multiply retires and frees `PR#3`, its old destination. The second load completes into `PR#8`, waking the second multiply. The first store executes and frees its RS, allowing the second store to dispatch with source tags `PR#1` and ready `PR#7`.
+
+![R10K cycle 9: retirement frees an old register while the store station is reused](images/09/09-28.png)
+
+* **Cycle 10:** The first store completes into the MOB. Younger completed instructions still wait behind it at retirement. The second multiply begins execution in cycle 10.
+* **Cycle 11:** The deck takes the exception path: the first store encounters an interrupt at retirement and does not commit. Recovery must undo the younger mappings before restarting it.
+
+Some slide annotations retain free-list entries with strike-throughs to show allocation history. Those registers are no longer free. Likewise, the cycle 9 annotation saying to get a value from the CDB should be read in the R10K model as tag wakeup followed by a PRF read; the scheduling CDB carries no operand values.
+
+### Precise Recovery with Physical Registers
+
+Clearing the map table is insufficient: there is no separate architectural register file to fall back on. Restore the mappings to the committed values instead. The example **walks the ROB backward from the youngest instruction**, returning each new physical destination to the free list and restoring the architectural destination's mapping to `Told`. Discard the associated RS and MOB entries as well. Older committed values remain in the PRF throughout.
+
+| Recovery cycle | Instruction undone | Register returned to free list | Mapping restored |
+| --- | --- | --- | --- |
+| 11 | Second store, `ROB#7` | None | None |
+| 12 | Second multiply, `ROB#6` | `PR#1` | `f4 → PR#6` |
+| 13 | Second load, `ROB#5` | `PR#8` | `f0 → PR#5` |
+| 14 | `addi`, `ROB#4` | `PR#7` | `r1 → PR#4` |
+| 15 | Faulting first store, `ROB#3` | None | None; restart the store after handling the condition |
+
+![R10K cycle 12: undoing the second multiply returns its new physical destination](images/09/09-29.png)
+
+The cycle 12 slide incorrectly labels the restored `f4` mapping as `PR#1`; the saved `Told` is **`PR#6`**. This is the first multiply's committed result.
+
+![R10K cycle 14: rollback restores the old loop-offset register mapping](images/09/09-30.png)
+
+The cycle 14 annotation also has two typos: undoing `addi` restores **`r1`**, not `f0`, and frees **`ROB#4`**, not `ROB#5`.
+
+![R10K cycle 15: mappings are back to committed state before restarting the store](images/09/09-31.png)
+
+After rollback, the ready mappings are `f0 → PR#5`, `f2 → PR#2`, `f4 → PR#6`, and `r1 → PR#4`. The free registers are `PR#1`, `PR#3`, `PR#7`, and `PR#8`. Recovery takes several cycles in this example; a checkpoint of the map and allocation state is another way to restore a known boundary.
+
+### P6 vs. R10K
+
+| Feature | P6 style | R10K style |
+| --- | --- | --- |
+| Value storage | Architectural register file, ROB, and RS copies | Physical register file |
+| Operand read | At DS, from register file or ROB into RS | At IS, from PRF to FU |
+| Result write | CM fills ROB; RT copies result to register file | CM writes destination PRF entry; RT does not move the value |
+| Reclaiming value storage | Retired result leaves the ROB | When an overwriting instruction retires, free its saved old physical destination |
+| Main value paths | RF/ROB to RS, RS to FU, FU to ROB, ROB to RF | PRF to FU and FU to PRF |
+| Recovery | Flush speculative buffers and register status | Restore mappings and reclaim speculative physical registers through rollback or checkpoints |
+
+Both organizations preserve program order at retirement while allowing out-of-order execution and completion. P6 simplifies recovery by keeping committed values in a separate register file; R10K reduces value copying and keeps scheduling structures focused on tags.
+
+## Dynamic Load Scheduling with the MOB
+
+Register tags capture register dependencies, but they do not tell a load whether an older store will write its memory address. The MOB must enforce these **memory dependencies** and support store-to-load forwarding.
+
+Treat **MOB + `D$`** as a memory functional unit: its inputs are an address and store data (`data_in`), and its output is load data (`data_out`). MOB entries record program order, load/store type, address, and data when available.
+
+![Memory functional unit combining the MOB, cache, address comparisons, and forwarding paths](images/09/09-32.png)
+
+### Load/Store Dispatch
+
+Allocate an entry at the MOB tail in program order, mark it as a load or store, and save its MOB number in the instruction's RS. The entry reserves its place before its address or data is necessarily ready.
+
+![Dispatch reserves a MOB entry and records whether it is a load or store](images/09/09-33.png)
+
+### Store Execution
+
+When its operands are ready, send the store's address and value to its allocated MOB entry. This completes the speculative store's computation without writing `D$`. Younger loads can now forward from it if they require that value.
+
+![A store writes its address and data into the MOB without updating the cache](images/09/09-34.png)
+
+### Load Execution and Forwarding
+
+Send the load address to the cache and MOB in parallel. The cache reads the addressed data while the MOB compares the address against **older active stores**, excluding younger stores even if they have executed already.
+
+![A load searches older MOB store addresses while accessing the data cache](images/09/09-35.png)
+
+* **No older matching store:** use the cache value, provided older unresolved stores cannot invalidate this choice.
+* **An older matching store with ready data:** forward from its MOB entry.
+* **Several older matching stores:** forward from the **youngest matching store older than the load**, which is the most recent write in program order.
+* **Matching store data not ready:** wait; an older cached value is not a valid substitute.
+
+![A matching MOB entry supplies load data through the forwarding multiplexer](images/09/09-36.png)
+
+An older store with an unknown address leaves a possible dependency unresolved. A conservative policy waits for it; a speculative policy predicts independence and must detect violations and replay affected work if the prediction was wrong. The forwarding diagrams assume matching addresses and access sizes; partial overlaps need additional handling.
+
+### Load/Store Retirement
+
+At in-order retirement, free the corresponding entry at the MOB head. A load has already obtained its result, so it needs no memory write. A store sends its buffered address and value to `D$` before its entry can be released. Faulting or squashed stores never make that write.
+
+![Store retirement commits the MOB head's address and value to the cache](images/09/09-37.png)
+
+## Historical Example: Pentium II vs. Pentium 4
+
+The deck closes with a comparison of representative processor configurations. The following entries show the design trend highlighted in the lecture; they are a historical snapshot rather than specifications for every model in either family.
+
+| Feature | Pentium II example | Pentium 4 example |
+| --- | --- | --- |
+| Clock | 450 MHz (Xeon) | 2.4 GHz |
+| Pipeline stages | 14 | 22 |
+| Branch predictor | 512-entry local | 2K-entry hybrid |
+| BTB | 512 entries | 4K entries |
+| Fetch width | 16 bytes | 3 micro-ops |
+| Rename/retire width | 3 micro-ops | 3 micro-ops |
+| Execute width | 5 micro-ops | 7 micro-ops |
+| Reservation stations | 20 | 60 |
+| ROB entries | 40 | 128 |
+| Register renaming | P6 style | R10K style |
+| Memory disambiguation | Conservative | Predictor based |
+
+A larger instruction window exposes more independent work, but also requires more scheduling and recovery state. A deeper pipeline makes branch recovery more costly, increasing the value of accurate prediction. The slide's cache rows mix cache levels and trace-cache quantities, so they should not be read as a like-for-like L1 cache comparison.
