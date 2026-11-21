@@ -507,23 +507,3 @@ An older store with an unknown address leaves a possible dependency unresolved. 
 At in-order retirement, free the corresponding entry at the MOB head. A load has already obtained its result, so it needs no memory write. A store sends its buffered address and value to `D$` before its entry can be released. Faulting or squashed stores never make that write.
 
 ![Store retirement commits the MOB head's address and value to the cache](images/09/09-37.png)
-
-## Historical Example: Pentium II vs. Pentium 4
-
-The deck closes with a comparison of representative processor configurations. The following entries show the design trend highlighted in the lecture; they are a historical snapshot rather than specifications for every model in either family.
-
-| Feature | Pentium II example | Pentium 4 example |
-| --- | --- | --- |
-| Clock | 450 MHz (Xeon) | 2.4 GHz |
-| Pipeline stages | 14 | 22 |
-| Branch predictor | 512-entry local | 2K-entry hybrid |
-| BTB | 512 entries | 4K entries |
-| Fetch width | 16 bytes | 3 micro-ops |
-| Rename/retire width | 3 micro-ops | 3 micro-ops |
-| Execute width | 5 micro-ops | 7 micro-ops |
-| Reservation stations | 20 | 60 |
-| ROB entries | 40 | 128 |
-| Register renaming | P6 style | R10K style |
-| Memory disambiguation | Conservative | Predictor based |
-
-A larger instruction window exposes more independent work, but also requires more scheduling and recovery state. A deeper pipeline makes branch recovery more costly, increasing the value of accurate prediction. The slide's cache rows mix cache levels and trace-cache quantities, so they should not be read as a like-for-like L1 cache comparison.
