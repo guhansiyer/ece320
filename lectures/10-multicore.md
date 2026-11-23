@@ -126,9 +126,9 @@ The load, check, subtraction, and store are separate instructions. Another threa
 
 Both withdrawals succeed, but the final balance is **$400 instead of $300**. This is a **lost update**: the result depends on how the threads interleave. An interrupt illustrates the problem, but two processors executing concurrently can produce the same interleaving without one.
 
-### Synchronizing Access to the Balance
+## Synchronization
 
-Use a lock to provide **mutual exclusion**. The region between `acquire(lock)` and `release(lock)` is a **critical section**, which only one thread may enter at a time. A competing acquire must wait until the current owner releases the lock.
+Use a lock to provide **mutual exclusion**. Locks have two operations: `acquire(lock)` and `release(lock)`. The region between `acquire(lock)` and `release(lock)` is a **critical section**, which only one thread may enter at a time. A competing acquire must wait until the current owner releases the lock.
 
 The entire balance check and update must be inside the critical section. Protecting only the final store would still let both threads compute from the same old balance.
 
@@ -151,3 +151,49 @@ release(lock);
 ![Lock acquisition prevents the second withdrawal from accessing the balance until the first releases the lock](images/10/10-5.png)
 
 The final balance is now **$300**, even with the interruption. The lock serializes the withdrawals' critical sections, so a thread cannot observe another withdrawal halfway through its check-and-update sequence.
+
+## Spin Lock
+
+A spin lock is an implementation of a lock in software. A waiting thread "spins" while the lock is busy.
+
+```c
+acquire(lock):
+  while (lock != 0) {}
+  lock = 1;
+```
+
+```asm
+A0: lw x6,0(&lock)
+A1: bne x6,x0,A0
+A2: addi x6,x6,1
+A3: sw x6,0(&lock)
+```
+
+```c
+release(lock):
+  lock = 0;
+```
+
+### Incorrect Use
+
+[]()
+
+A spin lock makes intuitive sense, but doesn't actually work because the loads and stores of two `acquire` sequences can be interleaved, so the lock `acquire` sequence is not atomic. This is the same problem as before.
+
+### SYSCALL Lock
+
+```asm
+A0: enable_interrupts
+A1: disable_interrupts 
+A2: lw x6,0(&lock)
+A3: bne x6,x0,A0
+A4: addi x6,x6,1
+A5: sw x6,0(&lock)
+A6: enable_interrupts
+A7: return
+```
+
+By implementing the lock in a syscall, only the kernel can control interleaving by disabling interrupts. This works, however, it is largely inefficient due to the syscall overhead.
+
+## Better Spin Lock: Atomic Swap
+
