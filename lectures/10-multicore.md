@@ -176,7 +176,7 @@ release(lock):
 
 ### Incorrect Use
 
-[]()
+![Interleaved lock acquisitions both read zero and enter the critical section](images/10/10-6.png)
 
 A spin lock makes intuitive sense, but doesn't actually work because the loads and stores of two `acquire` sequences can be interleaved, so the lock `acquire` sequence is not atomic. This is the same problem as before.
 
@@ -195,5 +195,52 @@ A7: return
 
 By implementing the lock in a syscall, only the kernel can control interleaving by disabling interrupts. This works, however, it is largely inefficient due to the syscall overhead.
 
+![System-call lock acquisition with the interrupt-disabled region highlighted](images/10/10-7.png)
+
 ## Better Spin Lock: Atomic Swap
 
+The RISC-V ISA provides an atomic lock acquisition instruction through extensions. An example of this would be atomic swap:
+
+```asm
+amoswap x1,0(&lock)
+
+# Atomically executes:
+
+mov x1->x2
+lw 0(&lock)->x1
+sw x2->0(&lock)
+```
+
+![Atomic swap exchanges a register value with the shared lock in one operation](images/10/10-8.png)
+
+This gives us a new `acquire` sequence:
+```asm
+# x1 = 1
+A0: amoswap x1,0(&lock)
+A1: bne x1,x0,A0
+```
+
+If the lock was initially busy, we keep looping and it doesn't change. If it was initially free, we acquire it, set it to 1 and break from the loop.
+
+## Implementing Atomic Swap
+
+The implementation is non-trivial. We must ensure that memory operations are non-intervening, which requires temporarily blocking access by other threads.
+
+If we use a single instruction we'd be combining a load and a store, which isn't very RISC like.
+
+One approach is to provide a "load-reserved" and "store-conditional" instruction pair.
+
+![Two processor pipelines accessing the shared data cache during atomic-swap implementation](images/10/10-1.png)
+
+## Load-reserved and Store-conditional
+
+`amoswap` as it stands is not very RISC with a load and a store in one instruction. If we broke it up into micro-ops, how would that be atomic?
+
+With `LR/SC` (load-reserved/store-conditional):
+
+```asm
+LR 0(&lock)->x1
+SC x2->0(&lock)
+```
+
+On `LR`, the processor loads the lock variable into `x1` and remembers address `0(&lock)` as reserved. On `SC`, the processor looks for changes in the reserved address by other threads, if a change is detected then it returns failure, otherwise it writes to the same address, clears the reserved address and returns success, 
