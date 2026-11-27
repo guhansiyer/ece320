@@ -243,4 +243,172 @@ LR 0(&lock)->x1
 SC x2->0(&lock)
 ```
 
-On `LR`, the processor loads the lock variable into `x1` and remembers address `0(&lock)` as reserved. On `SC`, the processor looks for changes in the reserved address by other threads, if a change is detected then it returns failure, otherwise it writes to the same address, clears the reserved address and returns success, 
+On `LR`, the processor loads the lock variable into `x1` and remembers address `0(&lock)` as reserved.
+
+On `SC`, the processor looks for changes in the reserved address by other threads, if a change is detected then it returns failure, otherwise it writes to the same address, clears the reserved address and returns success.
+
+## Lock Correctness
+
+This lock actually works! Thread 1 keeps spinning. This is sometimes called a test-and-set lock.
+
+However, it performs poorly. Consider 3 processors rather than 2, where processor 2 (not shown) has the lock and is in the critical section. Processor 0 and 1 are looping with `amoswap`, each of which includes an `LR/SC`, which generates useless traffic.
+
+### Test-and-test-and-set locks
+
+This is the solution to our poor performance:
+
+```asm
+A0: lw x1,0(&lock)
+A1: bne x1,x0,A0
+A2: addi x1,x1,1
+A3: amoswap x1,0(&lock)
+A4: bne x1,x0,A0
+```
+
+Before each `amoswap`, we do a simple test (`lw`) to see if the lock value has changed, and only execute `amoswap` if the lock is actually free.
+
+Processors can spin on a busy lock locally (in their own cache).
+
+## Private Caches and Shared Memory
+
+Sharing L1 caches creates bandwidth and latency bottlenecks, with possible cache thrashing. Per-processor **private caches** reduce latency and increase throughput, but require a **cache coherence protocol** to coordinate their contents.
+
+The shared-memory abstraction still applies even when processors have private caches, memory is physically distributed, and communication uses an interconnect.
+
+![Processors with private caches and distributed memory connected through router interfaces](images/10/10-9.png)
+
+### Shared Cache Example
+
+Revisit the two $100 withdrawals, with locks protecting the critical sections. Let `A` be the balance, initially $500.
+
+* With no caches, the first withdrawal writes $400 to memory; the second reads $400 and writes $300.
+* With one shared cache, P1's load brings `A = 500` into the cache. Its store changes the cached value to $400 and marks the block dirty; memory can remain at $500. Other processors access the same cached copy.
+* The shared cache becomes a bottleneck when there are no per-core caches.
+
+### Private Write-Back Caches: Incoherence
+
+1. P1 loads `A = 500` into its private cache, then stores $400 there and marks its block dirty.
+2. The shared cache and memory still contain $500.
+3. P0 loads `A`, misses in its private cache, and receives the stale $500 from the shared cache instead of P1's $400.
+
+![P0 receives a stale balance of 500 while P1 holds a dirty copy containing 400](images/10/10-10.png)
+
+Locks alone do not solve this problem: even serialized critical sections need writes to become visible to other processors.
+
+### Private Write-Through Caches
+
+Write-through updates lower levels on every store, but does not automatically update other private caches.
+
+1. P1 loads $500, then stores $400. Its cache, the shared cache, and memory now contain $400.
+2. P0 loads $400 into its own cache, then stores $300. The shared cache and memory become $300.
+3. P1 still has $400 in its private cache, so its next load can hit on stale data.
+
+![P1 retains a stale private copy of 400 after P0 writes 300 through to memory](images/10/10-11.png)
+
+## Hardware Cache Coherence
+
+Removing caches is too slow. Making all shared data uncacheable also hurts performance, while flushing all other caches on every shared write loses much of the benefit of caching. Hardware coherence coordinates copies with minimal flushing.
+
+In a **bus-based multiprocessor**, all processors see bus requests in the same order. Each cache's **coherence controller (CC)** snoops bus addresses and data, then applies a protocol to its local blocks.
+
+![Coherence controller monitoring cache tags, cache data and the shared bus](images/10/10-12.png)
+
+Two invariants guide coherence:
+
+* **Single-writer-multiple-reader (SWMR):** for a location, either one core may write (and read), or multiple cores may only read.
+* **Data-value invariant (DVI):** a read returns the value of the last write to that location.
+
+### Coherence Events
+
+| Source | Event | Meaning |
+| --- | --- | --- |
+| Local processor | `Load`, `Store` | Read or write a block |
+| Local processor | `Repl` | Evict/write back a block |
+| Local bus request | `OwnGetS` | Request a block for reading |
+| Local bus request | `OwnGetM` | Request a block for writing |
+| Local eviction | `PutS`, `PutM` | Release a shared or modified block |
+| Another processor | `OtherGetS` | Another core's read miss |
+| Another processor | `OtherGetM` | Another core's write request |
+
+## VI (MI) Coherence Protocol
+
+The **valid-invalid** protocol, also called modified-invalid, has two states per cached block: **V** means the cache has the block, and **I** means it does not. A valid bit can represent these states.
+
+Only one cache may hold a valid copy. If another processor requests the block for reading or writing, the current holder supplies its data and invalidates its copy, writing back dirty data.
+
+![VI state transitions for local accesses, replacement and requests from other processors](images/10/10-13.png)
+
+### Cache Controller Transitions
+
+Each cell gives the action and resulting state; `-` means no action or state change.
+
+| State | Local load/store | Replacement | `OtherGetS` | `OtherGetM` |
+| --- | --- | --- | --- | --- |
+| I | Issue `Get`; enter V | - | - | - |
+| V | Hit; remain V | Issue `Put` with data; enter I | Send data; enter I | Send data; enter I |
+
+`Send Data` transmits the block to memory and the requesting processor. Memory supplies data when no cache responds.
+
+### Memory Controller Transitions
+
+The memory controller also tracks the block's state. In the slide's memory-controller table:
+
+| State | Bus `Get` | Bus `Put` | Bus `Send Data` |
+| --- | --- | --- | --- |
+| I | Send data; enter V | - | - |
+| V | - | Update memory; enter I | Update memory; remain V |
+
+### VI Withdrawal Example
+
+| Event | P0 cache | P1 cache | Memory |
+| --- | --- | --- | --- |
+| Initially | I | I | 500 |
+| P0 loads balance | V:500 | I | 500 |
+| P0 stores after withdrawal | V:400 | I | 500 |
+| P1 loads balance | I | V:400 | 400 |
+| P1 stores after withdrawal | I | V:300 | 400 |
+
+P1's load generates `OtherGetS` at P0. P0 sends its dirty $400 copy, updates memory, and enters I, so P1 receives the current balance.
+
+VI is inefficient for read sharing: even read-only copies cannot coexist. Split V into modified and shared states to allow multiple readers.
+
+## MSI Coherence Protocol
+
+**Modified-shared-invalid (MSI)** allows either multiple read-only copies or a single read/write copy.
+
+* **M (modified):** local dirty copy; this cache may read and write.
+* **S (shared):** local clean copy; multiple caches may hold read-only copies.
+* **I (invalid):** no usable local copy.
+
+![MSI state transitions allowing shared readers or one modified writer](images/10/10-14.png)
+
+### Cache Controller Transitions
+
+| State | Local load | Local store | Replacement | `OtherGetS` | `OtherGetM` |
+| --- | --- | --- | --- | --- | --- |
+| I | Issue `GetS`; enter S | Issue `GetM`; enter M | - | - | - |
+| S | Hit | Issue `GetM`; enter M | Enter I | Remain S | Enter I |
+| M | Hit | Hit | Issue `PutM`; enter I | Send data; enter S | Send data; enter I |
+
+An **upgrade** occurs when a local store changes S to M. All other shared copies must become I before the local core can write.
+
+### MSI with a Snoopy Bus: Load A
+
+Initially, P1 holds `A = 500` in M. P0 and P2 have no copy. The shared cache and memory contain an older `A = 1000`; the shared cache marks A as modified in a private cache. `B = 0` is idle.
+
+1. **Step 1 (slide 70):** P0's `Load A` misses.
+2. **Step 2:** P0 broadcasts `GetS: Addr=A` on the bus.
+3. **Step 3:** P1 snoops the request, responds with `A = 500`, and changes M to S.
+4. **Step 4:** P0 receives $500 in S. The shared cache also receives $500 and becomes shared and dirty; main memory remains at $1000.
+5. **Step 5:** P0's load returns $500. P0 and P1 now both hold A in S.
+
+![P1 supplies A to P0 and the shared cache, leaving both private copies shared](images/10/10-15.png)
+
+Here the private S copies are clean relative to the shared cache; the shared cache remains dirty relative to main memory.
+
+### MSI with a Snoopy Bus: Store A
+
+6. **Step 6 (slide 75):** P0 wants to store $400 to A, but its S copy requires an upgrade.
+7. **Step 7 (slide 76):** P0 broadcasts `GetM: Addr=A` to request write permission. At this point in the example, both private copies still show S with $500; the shared cache holds $500, and memory holds $1000.
+
+![P0 broadcasts GetM to upgrade its shared copy before storing 400](images/10/10-16.png)
